@@ -1,0 +1,12 @@
+<launch>
+    <!--<node name="loitor_stereo_node" pkg="loitor_stereo_visensor" type="loitor_stereo_visensor">-->
+
+    <!--</node>-->
+
+    <node name="stereo_image_proc" pkg="stereo_image_proc" type="stereo_image_proc" output="screen">
+        <remap from="/right/image_raw" to="/cam0/image_raw"/>
+        <remap from="/right/camera_info" to="/cam0/camera_info"/>
+        <remap from="/left/image_raw" to="/cam1/image_raw"/>
+        <remap from="/left/camera_info" to="/cam1/camera_info"/>
+    </node>
+</launch>

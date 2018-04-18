@@ -1,8 +1,10 @@
-#include "ros/ros.h" 
-#include "std_msgs/String.h"
+#include <ros/ros.h>
+#include <ros/package.h>
+#include <std_msgs/String.h>
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
-#include "sensor_msgs/Imu.h"
+#include <sensor_msgs/Imu.h>
+#include <camera_info_manager/camera_info_manager.h>
 
 #include <cv.h>
 #include <highgui.h>
@@ -26,6 +28,9 @@ using namespace cv;
 
 
 ros::Publisher pub_imu;
+string setup;
+string calib_cam0;
+string calib_cam1;
 
 /*
 *  用于构造cv::Mat 的左右眼图像
@@ -96,11 +101,44 @@ void* imu_data_stream(void *)
 
 int main(int argc, char **argv)
 { 
-	/************************ Start Cameras ************************/
-	if(argv[1])
-		visensor_load_settings(argv[1]);
-	else 
-		visensor_load_settings("src/loitor_stereo_visensor/Loitor_VISensor_Setups.txt");
+	// init ROS
+	ros::init(argc, argv, "loitor_stereo_visensor");
+	ros::NodeHandle n("~");
+
+	string pkg_path = ros::package::getPath("loitor_stereo_visensor");
+	n.param<string>("calib0", calib_cam0, "file://" + pkg_path + "/calib/right.yaml");
+	n.param<string>("calib1", calib_cam1, "file://" + pkg_path + "/calib/left.yaml");
+	n.param<string>("setup", setup, pkg_path + "/cfg/Loitor_VISensor_Setups.txt");
+
+	// imu publisher
+	pub_imu = n.advertise<sensor_msgs::Imu>("imu0", 200);
+ 
+	// publish 到这两个 topic
+	image_transport::ImageTransport it0(n);
+	image_transport::Publisher pub0 = it0.advertise("/cam0/image_raw", 1);
+	ros::Publisher cam0_info = n.advertise<sensor_msgs::CameraInfo>("/cam0/camera_info", 10);
+    sensor_msgs::CameraInfo cam0_info_msg;
+    sensor_msgs::ImagePtr msg;
+
+	image_transport::ImageTransport it1(n);
+	image_transport::Publisher pub1 = it1.advertise("/cam1/image_raw", 1);
+    ros::Publisher cam1_info = n.advertise<sensor_msgs::CameraInfo>("/cam1/camera_info", 10);
+    sensor_msgs::CameraInfo cam1_info_msg;
+	sensor_msgs::ImagePtr msg1;
+
+	// load camera calib
+    camera_info_manager::CameraInfoManager cam_manager(n);
+    cam_manager.setCameraName("right");
+    if(cam_manager.loadCameraInfo(calib_cam0)){
+        cam0_info_msg = cam_manager.getCameraInfo();
+    }
+    cam_manager.setCameraName("left");
+    if(cam_manager.loadCameraInfo(calib_cam1)){
+        cam1_info_msg = cam_manager.getCameraInfo();
+    }
+
+    /************************ Start Cameras ************************/
+	visensor_load_settings(setup.c_str());
 
 	// 手动设置相机参数
 	//set_current_mode(5);
@@ -112,11 +150,11 @@ int main(int argc, char **argv)
 	//set_fps_mode(true);
 	// 保存相机参数到原配置文件
 	//save_current_settings();
-	
+
 	int r = visensor_Start_Cameras();
 	if(r<0)
 	{
-		printf("Opening cameras failed...\r\n");
+		ROS_ERROR("Opening cameras failed...");
 		return r;
 	}
 	// 创建用来接收camera数据的图像
@@ -139,34 +177,19 @@ int main(int argc, char **argv)
 	int fd=visensor_Start_IMU();
 	if(fd<0)
 	{
-		printf("open_port error...\r\n");
+		ROS_ERROR("open_port error...");
 		return 0;
 	}
-	printf("open_port success...\r\n");
+	ROS_DEBUG("open_port success...");
 	usleep(100000);
 	/************************ ************ ************************/
 
 	//Create imu_data_stream thread
 	pthread_t imu_data_thread;
-	int temp;
-	if(temp = pthread_create(&imu_data_thread, NULL, imu_data_stream, NULL))
-	printf("Failed to create thread imu_data_stream\r\n");
-	
-	ros::init(argc, argv, "loitor_stereo_visensor");
-
-	ros::NodeHandle n;
-
-	// imu publisher
-	pub_imu = n.advertise<sensor_msgs::Imu>("imu0", 200);
- 
-	// publish 到这两个 topic
-	image_transport::ImageTransport it(n);
-	image_transport::Publisher pub = it.advertise("/cam0/image_raw", 1);
-	sensor_msgs::ImagePtr msg;
-
-	image_transport::ImageTransport it1(n);
-	image_transport::Publisher pub1 = it1.advertise("/cam1/image_raw", 1);
-	sensor_msgs::ImagePtr msg1;
+	int temp = pthread_create(&imu_data_thread, NULL, imu_data_stream, NULL);
+	if(temp){
+		ROS_ERROR("Failed to create thread imu_data_stream");
+	}
 
 	// 使用camera硬件帧率设置发布频率
 	ros::Rate loop_rate((int)hardware_fps);
@@ -184,6 +207,7 @@ int main(int argc, char **argv)
 		imu_start_transfer=true;
 
 		//cout<<"visensor_get_hardware_fps() ==== "<<visensor_get_hardware_fps()<<endl;
+
 
 		if(visensor_cam_selection==0)
 		{
@@ -218,7 +242,7 @@ int main(int argc, char **argv)
 
 			static_ct++;
 			{
-				pub.publish(msg);
+				pub0.publish(msg);
 				pub1.publish(msg1);
 				static_ct=0;
 			}
@@ -246,7 +270,7 @@ int main(int argc, char **argv)
 			t_right.header.seq=0;
 			
 			msg1 = t_right.toImageMsg();
-			
+
 			pub1.publish(msg1);
 		}
 		else if(visensor_cam_selection==2)
@@ -273,12 +297,17 @@ int main(int argc, char **argv)
 			static_ct++;
 			if(static_ct>=5)
 			{
-				pub.publish(msg);
+				pub0.publish(msg);
 				static_ct=0;
 			}
 		}
 
-		ros::spinOnce(); 
+        cam0_info_msg.header.stamp = msg->header.stamp;
+        cam1_info_msg.header.stamp = msg1->header.stamp;
+        cam0_info.publish(cam0_info_msg);
+        cam1_info.publish(cam1_info_msg);
+
+		//ros::spinOnce();
 
 		loop_rate.sleep(); 
 		
@@ -288,7 +317,7 @@ int main(int argc, char **argv)
 	visensor_Close_IMU_viewer=true;
 	if(imu_data_thread !=0)
 	{
-		pthread_join(imu_data_thread,NULL);
+		pthread_join(imu_data_thread, NULL);
 	}
 
 	cout<<endl<<"shutting-down Cameras"<<endl;

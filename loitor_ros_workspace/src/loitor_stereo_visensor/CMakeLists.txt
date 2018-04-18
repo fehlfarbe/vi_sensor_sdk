@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   image_transport
   message_generation
   sensor_msgs
+  camera_info_manager
 )
 
 catkin_package(
@@ -17,6 +18,7 @@ catkin_package(
   image_transport
   message_runtime
   sensor_msgs
+  camera_info_manager
 )
 
 include_directories(
